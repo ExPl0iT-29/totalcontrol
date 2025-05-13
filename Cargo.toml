@@ -1,0 +1,10 @@
+[package]
+name = "totalcontrol"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+native-windows-gui = "1.0"
+windows = { version = "0.48", features = ["Win32_UI_Input_KeyboardAndMouse"] }
+native-windows-derive = "1.0"
+
