@@ -1,18 +1,23 @@
+mod hotkey;
 use native_windows_gui as nwg;
 use nwg::NativeUi;
-use windows::Win32::UI::Input::KeyboardAndMouse::{RegisterHotKey, MOD_CONTROL, VIRTUAL_KEY};
-use windows::Win32::Foundation::HWND;
+use windows::Win32::Foundation::{HWND, WPARAM, LPARAM};
+use std::sync::{Arc, atomic::{AtomicBool, Ordering}};
+use std::rc::Rc;
+use std::cell::RefCell;
 
 #[derive(Default)]
 pub struct SearchBarApp {
     window: nwg::Window,
     input: nwg::TextInput,
     listbox: nwg::ListBox<String>,
-    hotkey: Option<nwg::GlobalHotKey>, // Store the registered hotkey
+    runner: nwg::Window,
+    poll_timer: nwg::Timer,
+    runner_bg: nwg::RichLabel,
 }
 
-impl nwg::NativeUi<SearchBarApp> for SearchBarApp {
-    fn build_ui(mut data: SearchBarApp) -> Result<SearchBarApp, nwg::NwgError> {
+impl nwg::NativeUi<Rc<RefCell<SearchBarApp>>> for SearchBarApp {
+    fn build_ui(mut data: SearchBarApp) -> Result<Rc<RefCell<SearchBarApp>>, nwg::NwgError> {
         // 1) Create the main window
         nwg::Window::builder()
             .size((400, 200))
@@ -20,7 +25,34 @@ impl nwg::NativeUi<SearchBarApp> for SearchBarApp {
             .title("TotalControl - NWG")
             .build(&mut data.window)?;
 
-        // Hide the window by default
+        // 1.5) Create the runner box (hidden by default)
+        nwg::Window::builder()
+            .size((300, 60))
+            .position((350, 220)) // Position above the main window
+            .title("")
+            .flags(nwg::WindowFlags::WINDOW | nwg::WindowFlags::VISIBLE | nwg::WindowFlags::POPUP)
+            .build(&mut data.runner)?;
+        data.runner.set_visible(false);
+
+        // Add a RichLabel as a grey background
+        nwg::RichLabel::builder()
+            .text("")
+            .parent(&data.runner)
+            .size((300, 60))
+            .position((0, 0))
+            .background_color(Some([200, 200, 200])) // light grey
+            .build(&mut data.runner_bg)?;
+
+        // Add a label to the runner box for visibility
+        let mut runner_label = nwg::Label::default();
+        nwg::Label::builder()
+            .text("Runner Box")
+            .parent(&data.runner)
+            .size((280, 40))
+            .position((10, 10))
+            .build(&mut runner_label)?;
+
+        // Hide the main window by default
         data.window.set_visible(false);
 
         // 2) Create a text input for the search query
@@ -42,78 +74,40 @@ impl nwg::NativeUi<SearchBarApp> for SearchBarApp {
         data.listbox.insert(0, "First Suggestion".to_string());
         data.listbox.insert(1, "Second Suggestion".to_string());
 
-        // 4) Bind an event handler to detect text changes
-        let input_handle = data.input.handle;
-        nwg::bind_event_handler(
-            &data.input.handle,
-            &data.window.handle,
-            move |evt, _evt_data, handle| {
-                if evt == nwg::Event::OnTextInput && handle == input_handle {
-                    let text = nwg::ControlHandle::from(handle).text().unwrap_or_default();
-                    println!("User typed: {}", text);
-                }
-            },
-        );
-
-        Ok(data)
-    }
-}
-
-impl SearchBarApp {
-    /// Store the hotkey in our app state and bind an event handler to show/hide the window.
-    pub fn set_hotkey(&mut self, hotkey: nwg::GlobalHotKey) {
-        self.hotkey = Some(hotkey);
-
-        // Toggle the window’s visibility when the hotkey is pressed.
-        let window_handle = self.window.handle;
-        let hotkey_handle = self.hotkey.as_ref().unwrap().handle;
-        nwg::bind_event_handler(
-            &hotkey_handle,
-            &window_handle,
-            move |evt, _evt_data, handle| {
-                if evt == nwg::Event::OnGlobalHotkey && handle == hotkey_handle {
-                    let window_ctrl = nwg::ControlHandle::from(window_handle);
-                    if let Some(win) = nwg::Window::from_handle(&window_ctrl) {
-                        let visible = win.visible();
-                        win.set_visible(!visible);
-                        if !visible {
-                            win.set_focus();
-                        }
-                    }
-                }
-            },
-        );
+        nwg::Timer::builder()
+            .interval(100)
+            .parent(&data.runner)
+            .build(&mut data.poll_timer)?;
+        Ok(Rc::new(RefCell::new(data)))
     }
 }
 
 fn main() {
-    // Initialize NWG
-    nwg::init().expect("Failed to init Native Windows GUI");
+    println!("[DEBUG] App starting...");
+    // Initialize NWG (optional, can be removed if not using NWG)
+    // nwg::init().expect("Failed to init Native Windows GUI");
 
-    // // Set a global default font (optional, but recommended)
-    // let default_font = nwg::Font::builder()
-    //     .family("Segoe UI")
-    //     .size(17)
-    //     .build()
-    //     .expect("Failed to build default font");
-    // nwg::Font::set_global_default(Some(default_font));
-
-    // Build the main UI
-    let mut app = SearchBarApp::build_ui(Default::default())
-        .expect("Failed to build UI");
-
-    // Register a global Ctrl+Space hotkey
-    let hk = nwg::GlobalHotKey::new(
-        Some("Ctrl+Space"),
-        &nwg::HotKeyModifiers::CTRL,
-        nwg::keys::VK_SPACE as u32
-    )
-    .expect("Failed to create global hotkey");
-    app.set_hotkey(hk);
-
-    // Keep the app alive
-    std::mem::forget(app);
-
-    // Enter the NWG event loop
-    nwg::dispatch_thread_events();
+    // Register a global Ctrl+Space hotkey and print a message when pressed
+    unsafe {
+        use windows::Win32::UI::Input::KeyboardAndMouse::{RegisterHotKey, HOT_KEY_MODIFIERS, MOD_CONTROL, VK_SPACE};
+        use windows::Win32::UI::WindowsAndMessaging::{GetMessageA, MSG};
+        use windows::Win32::Foundation::HWND;
+        let ok = RegisterHotKey(
+            HWND(0),
+            1,
+            HOT_KEY_MODIFIERS(MOD_CONTROL.0),
+            VK_SPACE.0 as u32
+        );
+        if !ok.as_bool() {
+            eprintln!("[DEBUG] Failed to register hotkey for Ctrl+Space.");
+        } else {
+            println!("[DEBUG] Hotkey registered (Ctrl+Space)");
+            let mut msg = MSG::default();
+            while GetMessageA(&mut msg, HWND(0), 0, 0).into() {
+                if msg.message == 786 {
+                    println!("Ctrl+Space was pressed!");
+                }
+            }
+        }
+    }
 }
