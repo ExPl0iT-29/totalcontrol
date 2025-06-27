@@ -1,0 +1,16 @@
+
+
+[
+  {
+    "name": "Open Notepad",
+    "command": "notepad.exe"
+  },
+  {
+    "name": "Open Google",
+    "command": "start https://www.google.com"
+  },
+  {
+    "name": "Launch Calculator",
+    "command": "calc.exe"
+  }
+]
