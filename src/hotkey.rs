@@ -3,7 +3,7 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
     RegisterHotKey, UnregisterHotKey, HOT_KEY_MODIFIERS, MOD_CONTROL, VK_SPACE
 };
 use windows::Win32::UI::WindowsAndMessaging::{
-    GetMessageA, MSG, WM_HOTKEY, SetForegroundWindow
+    GetMessageA, MSG, WM_HOTKEY
 };
 
 pub unsafe fn register_hotkey() {

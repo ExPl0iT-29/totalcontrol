@@ -55,6 +55,9 @@ impl SearchBarApp {
             SetForegroundWindow(hwnd);
         }
         
+        // Focus the input field
+        self.input.set_focus();
+        
         println!("[DEBUG] Launcher window should now be visible and focused");
     }
     
@@ -93,22 +96,31 @@ impl SearchBarApp {
             if let Some(command) = self.listbox.collection().get(index) {
                 println!("[DEBUG] Executing command: {}", command);
                 
+                // Extract actual command from display text
+                let actual_command = if command.contains(" → ") {
+                    command.split(" → ").nth(1).unwrap_or(command)
+                } else if command.starts_with("Run: ") {
+                    &command[5..]
+                } else {
+                    command
+                };
+                
                 // Simple command execution
-                if command.starts_with("http") {
+                if actual_command.starts_with("http") {
                     // Open URL
                     std::process::Command::new("cmd")
-                        .args(&["/C", "start", command])
+                        .args(&["/C", "start", actual_command])
                         .spawn()
                         .ok();
-                } else if command.ends_with(".exe") {
+                } else if actual_command.ends_with(".exe") {
                     // Run executable
-                    std::process::Command::new(command)
+                    std::process::Command::new(actual_command)
                         .spawn()
                         .ok();
                 } else {
                     // Try to run as command
                     std::process::Command::new("cmd")
-                        .args(&["/C", command])
+                        .args(&["/C", actual_command])
                         .spawn()
                         .ok();
                 }
@@ -128,12 +140,17 @@ fn get_suggestions(query: &str) -> Vec<String> {
     let apps = vec![
         ("notepad", "notepad.exe"),
         ("calc", "calc.exe"),
+        ("calculator", "calc.exe"),
         ("paint", "mspaint.exe"),
         ("cmd", "cmd.exe"),
+        ("command", "cmd.exe"),
         ("powershell", "powershell.exe"),
         ("explorer", "explorer.exe"),
         ("chrome", "chrome.exe"),
         ("firefox", "firefox.exe"),
+        ("edge", "msedge.exe"),
+        ("task", "taskmgr.exe"),
+        ("taskmanager", "taskmgr.exe"),
     ];
     
     // Common websites
@@ -142,6 +159,9 @@ fn get_suggestions(query: &str) -> Vec<String> {
         ("youtube", "https://www.youtube.com"),
         ("github", "https://www.github.com"),
         ("stackoverflow", "https://stackoverflow.com"),
+        ("reddit", "https://www.reddit.com"),
+        ("twitter", "https://www.twitter.com"),
+        ("facebook", "https://www.facebook.com"),
     ];
     
     // Match applications
@@ -236,54 +256,75 @@ impl nwg::NativeUi<Rc<RefCell<SearchBarApp>>> for SearchBarApp {
         
         let app = Rc::new(RefCell::new(data));
         
-        // Set up event handlers using the correct NWG event system
-        let app_clone = app.clone();
-        let timer_handler = nwg::bind_event_handler(&app.borrow().poll_timer.handle, nwg::Event::OnTimerTick, move |_evt, _evt_data, _handle| {
-            let mut app_ref = app_clone.borrow_mut();
-            if let Some(ref receiver) = app_ref.hotkey_receiver {
-                if receiver.try_recv().is_ok() {
-                    println!("[DEBUG] Received hotkey signal");
-                    app_ref.show_launcher();
+        // Use NWG's partial application system for event handling
+        let app_weak = Rc::downgrade(&app);
+        let timer_handler = nwg::full_bind_event_handler(&app.borrow().poll_timer.handle, move |_evt, _evt_data, _handle| {
+            if let Some(app) = app_weak.upgrade() {
+                let mut app_ref = app.borrow_mut();
+                if let Some(ref receiver) = app_ref.hotkey_receiver {
+                    if receiver.try_recv().is_ok() {
+                        println!("[DEBUG] Received hotkey signal");
+                        app_ref.show_launcher();
+                    }
                 }
             }
         });
         
-        let app_clone = app.clone();
-        let input_handler = nwg::bind_event_handler(&app.borrow().input.handle, nwg::Event::OnTextInput, move |_evt, _evt_data, _handle| {
-            app_clone.borrow().handle_input_change();
-        });
-        
-        let app_clone = app.clone();
-        let button_handler = nwg::bind_event_handler(&app.borrow().close_button.handle, nwg::Event::OnButtonClick, move |_evt, _evt_data, _handle| {
-            app_clone.borrow().hide_launcher();
-        });
-        
-        let app_clone = app.clone();
-        let listbox_handler = nwg::bind_event_handler(&app.borrow().listbox.handle, nwg::Event::OnListBoxDoubleClick, move |_evt, _evt_data, _handle| {
-            app_clone.borrow().execute_command();
-        });
-        
-        // Handle key events on the input
-        let app_clone = app.clone();
-        let key_handler = nwg::bind_event_handler(&app.borrow().input.handle, nwg::Event::OnKeyPress, move |evt, evt_data, _handle| {
-            if let nwg::EventData::OnKey(key_data) = evt_data {
-                match key_data {
-                    nwg::keys::RETURN => {
-                        app_clone.borrow().execute_command();
+        // Handle input changes
+        let app_weak = Rc::downgrade(&app);
+        let input_handler = nwg::full_bind_event_handler(&app.borrow().input.handle, move |evt, _evt_data, _handle| {
+            if let Some(app) = app_weak.upgrade() {
+                match evt {
+                    nwg::Event::OnTextInput => {
+                        app.borrow().handle_input_change();
                     },
-                    nwg::keys::ESCAPE => {
-                        app_clone.borrow().hide_launcher();
+                    nwg::Event::OnKeyPress => {
+                        if let nwg::EventData::OnKey(key_data) = _evt_data {
+                            match key_data {
+                                nwg::keys::RETURN => {
+                                    app.borrow().execute_command();
+                                },
+                                nwg::keys::ESCAPE => {
+                                    app.borrow().hide_launcher();
+                                },
+                                _ => {}
+                            }
+                        }
                     },
                     _ => {}
                 }
             }
         });
         
+        // Handle button click
+        let app_weak = Rc::downgrade(&app);
+        let button_handler = nwg::full_bind_event_handler(&app.borrow().close_button.handle, move |evt, _evt_data, _handle| {
+            if let Some(app) = app_weak.upgrade() {
+                if let nwg::Event::OnButtonClick = evt {
+                    app.borrow().hide_launcher();
+                }
+            }
+        });
+        
+        // Handle listbox double click
+        let app_weak = Rc::downgrade(&app);
+        let listbox_handler = nwg::full_bind_event_handler(&app.borrow().listbox.handle, move |evt, _evt_data, _handle| {
+            if let Some(app) = app_weak.upgrade() {
+                if let nwg::Event::OnListBoxDoubleClick = evt {
+                    app.borrow().execute_command();
+                }
+            }
+        });
+        
         // Handle window close
-        let app_clone = app.clone();
-        let close_handler = nwg::bind_event_handler(&app.borrow().window.handle, nwg::Event::OnWindowClose, move |_evt, _evt_data, _handle| {
-            app_clone.borrow().hide_launcher();
-            nwg::stop_thread_dispatch();
+        let app_weak = Rc::downgrade(&app);
+        let close_handler = nwg::full_bind_event_handler(&app.borrow().window.handle, move |evt, _evt_data, _handle| {
+            if let Some(app) = app_weak.upgrade() {
+                if let nwg::Event::OnWindowClose = evt {
+                    app.borrow().hide_launcher();
+                    nwg::stop_thread_dispatch();
+                }
+            }
         });
         
         // Start the timer
