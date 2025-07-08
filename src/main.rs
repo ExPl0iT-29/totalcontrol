@@ -1,7 +1,6 @@
 mod hotkey;
 use native_windows_gui as nwg;
 use nwg::NativeUi;
-use std::sync::{Arc, Mutex};
 use std::rc::Rc;
 use std::cell::RefCell;
 use std::thread;
@@ -14,7 +13,7 @@ pub struct SearchBarApp {
     listbox: nwg::ListBox<String>,
     close_button: nwg::Button,
     hotkey_receiver: Option<mpsc::Receiver<()>>,
-    poll_timer: nwg::Timer,
+    poll_timer: nwg::AnimationTimer,
 }
 
 impl SearchBarApp {
@@ -25,13 +24,21 @@ impl SearchBarApp {
         self.input.set_text("");
         
         // Position window in center of screen
-        let screen_width = unsafe { windows::Win32::UI::WindowsAndMessaging::GetSystemMetrics(windows::Win32::UI::WindowsAndMessaging::SM_CXSCREEN) };
-        let screen_height = unsafe { windows::Win32::UI::WindowsAndMessaging::GetSystemMetrics(windows::Win32::UI::WindowsAndMessaging::SM_CYSCREEN) };
+        let screen_width = unsafe { 
+            windows::Win32::UI::WindowsAndMessaging::GetSystemMetrics(
+                windows::Win32::UI::WindowsAndMessaging::SM_CXSCREEN
+            ) 
+        };
+        let screen_height = unsafe { 
+            windows::Win32::UI::WindowsAndMessaging::GetSystemMetrics(
+                windows::Win32::UI::WindowsAndMessaging::SM_CYSCREEN
+            ) 
+        };
         
-        let window_width = 500;
-        let window_height = 250;
-        let x = (screen_width - window_width) / 2;
-        let y = (screen_height - window_height) / 3; // Position in upper third
+        let window_width = 500u32;
+        let window_height = 250u32;
+        let x = ((screen_width - window_width as i32) / 2) as i32;
+        let y = ((screen_height - window_height as i32) / 3) as i32; // Position in upper third
         
         self.window.set_position(x, y);
         self.window.set_size(window_width, window_height);
@@ -39,18 +46,13 @@ impl SearchBarApp {
         // Show and bring to front
         self.window.set_visible(true);
         
-        // Bring window to foreground and focus the input
+        // Bring window to foreground
         unsafe {
-            use windows::Win32::UI::WindowsAndMessaging::{SetForegroundWindow, SetActiveWindow, SetFocus};
+            use windows::Win32::UI::WindowsAndMessaging::SetForegroundWindow;
             use windows::Win32::Foundation::HWND;
             
-            let hwnd = HWND(self.window.handle().hwnd().unwrap() as isize);
+            let hwnd = HWND(self.window.handle.hwnd().unwrap() as isize);
             SetForegroundWindow(hwnd);
-            SetActiveWindow(hwnd);
-            
-            // Focus the input field
-            let input_hwnd = HWND(self.input.handle().hwnd().unwrap() as isize);
-            SetFocus(input_hwnd);
         }
         
         println!("[DEBUG] Launcher window should now be visible and focused");
@@ -166,6 +168,13 @@ fn get_suggestions(query: &str) -> Vec<String> {
 
 impl nwg::NativeUi<Rc<RefCell<SearchBarApp>>> for SearchBarApp {
     fn build_ui(mut data: SearchBarApp) -> Result<Rc<RefCell<SearchBarApp>>, nwg::NwgError> {
+        // Create font for better appearance
+        let mut font = nwg::Font::default();
+        nwg::Font::builder()
+            .family("Segoe UI")
+            .size(16)
+            .build(&mut font)?;
+        
         // Create the main window (initially hidden)
         nwg::Window::builder()
             .size((500, 250))
@@ -183,12 +192,7 @@ impl nwg::NativeUi<Rc<RefCell<SearchBarApp>>> for SearchBarApp {
             .size((460, 35))
             .position((20, 20))
             .placeholder_text(Some("Type to search..."))
-            .font(Some(&nwg::Font {
-                family: "Segoe UI".to_string(),
-                size: 14,
-                weight: 400,
-                decoration: nwg::FontDecoration::default(),
-            }))
+            .font(Some(&font))
             .build(&mut data.input)?;
         
         // Create suggestions listbox
@@ -196,6 +200,7 @@ impl nwg::NativeUi<Rc<RefCell<SearchBarApp>>> for SearchBarApp {
             .parent(&data.window)
             .size((460, 150))
             .position((20, 65))
+            .font(Some(&font))
             .build(&mut data.listbox)?;
         
         // Add default suggestion
@@ -207,12 +212,13 @@ impl nwg::NativeUi<Rc<RefCell<SearchBarApp>>> for SearchBarApp {
             .size((80, 25))
             .position((400, 220))
             .text("Close")
+            .font(Some(&font))
             .build(&mut data.close_button)?;
         
-        // Create timer for polling hotkey events
-        nwg::Timer::builder()
+        // Create animation timer for polling hotkey events
+        nwg::AnimationTimer::builder()
             .parent(&data.window)
-            .interval(50) // Check every 50ms
+            .interval(std::time::Duration::from_millis(50))
             .build(&mut data.poll_timer)?;
         
         // Set up hotkey monitoring in separate thread
@@ -230,9 +236,9 @@ impl nwg::NativeUi<Rc<RefCell<SearchBarApp>>> for SearchBarApp {
         
         let app = Rc::new(RefCell::new(data));
         
-        // Set up event handlers
+        // Set up event handlers using the correct NWG event system
         let app_clone = app.clone();
-        app.borrow().poll_timer.set_tick(move |_| {
+        let timer_handler = nwg::bind_event_handler(&app.borrow().poll_timer.handle, nwg::Event::OnTimerTick, move |_evt, _evt_data, _handle| {
             let mut app_ref = app_clone.borrow_mut();
             if let Some(ref receiver) = app_ref.hotkey_receiver {
                 if receiver.try_recv().is_ok() {
@@ -243,36 +249,45 @@ impl nwg::NativeUi<Rc<RefCell<SearchBarApp>>> for SearchBarApp {
         });
         
         let app_clone = app.clone();
-        app.borrow().input.set_text_changed(move |_| {
+        let input_handler = nwg::bind_event_handler(&app.borrow().input.handle, nwg::Event::OnTextInput, move |_evt, _evt_data, _handle| {
             app_clone.borrow().handle_input_change();
         });
         
         let app_clone = app.clone();
-        app.borrow().close_button.set_click(move |_| {
+        let button_handler = nwg::bind_event_handler(&app.borrow().close_button.handle, nwg::Event::OnButtonClick, move |_evt, _evt_data, _handle| {
             app_clone.borrow().hide_launcher();
         });
         
         let app_clone = app.clone();
-        app.borrow().listbox.set_double_click(move |_| {
+        let listbox_handler = nwg::bind_event_handler(&app.borrow().listbox.handle, nwg::Event::OnListBoxDoubleClick, move |_evt, _evt_data, _handle| {
             app_clone.borrow().execute_command();
         });
         
-        // Handle Enter key in input
+        // Handle key events on the input
         let app_clone = app.clone();
-        app.borrow().input.set_key_press(move |key| {
-            if key.code == nwg::keys::RETURN {
-                app_clone.borrow().execute_command();
-            } else if key.code == nwg::keys::ESCAPE {
-                app_clone.borrow().hide_launcher();
+        let key_handler = nwg::bind_event_handler(&app.borrow().input.handle, nwg::Event::OnKeyPress, move |evt, evt_data, _handle| {
+            if let nwg::EventData::OnKey(key_data) = evt_data {
+                match key_data {
+                    nwg::keys::RETURN => {
+                        app_clone.borrow().execute_command();
+                    },
+                    nwg::keys::ESCAPE => {
+                        app_clone.borrow().hide_launcher();
+                    },
+                    _ => {}
+                }
             }
         });
         
         // Handle window close
         let app_clone = app.clone();
-        app.borrow().window.set_on_close(move |_| {
+        let close_handler = nwg::bind_event_handler(&app.borrow().window.handle, nwg::Event::OnWindowClose, move |_evt, _evt_data, _handle| {
             app_clone.borrow().hide_launcher();
             nwg::stop_thread_dispatch();
         });
+        
+        // Start the timer
+        app.borrow().poll_timer.start();
         
         Ok(app)
     }
