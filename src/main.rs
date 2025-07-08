@@ -1,6 +1,5 @@
 mod hotkey;
 use native_windows_gui as nwg;
-use nwg::NativeUi;
 use std::rc::Rc;
 use std::cell::RefCell;
 use std::thread;
@@ -186,141 +185,74 @@ fn get_suggestions(query: &str) -> Vec<String> {
     suggestions
 }
 
-impl nwg::NativeUi<Rc<RefCell<SearchBarApp>>> for SearchBarApp {
-    fn build_ui(mut data: SearchBarApp) -> Result<Rc<RefCell<SearchBarApp>>, nwg::NwgError> {
-        // Create font for better appearance
-        let mut font = nwg::Font::default();
-        nwg::Font::builder()
-            .family("Segoe UI")
-            .size(16)
-            .build(&mut font)?;
-        
-        // Create the main window (initially hidden)
-        nwg::Window::builder()
-            .size((500, 250))
-            .position((300, 300))
-            .title("TotalControl")
-            .flags(nwg::WindowFlags::WINDOW | nwg::WindowFlags::VISIBLE)
-            .build(&mut data.window)?;
-        
-        // Hide initially
-        data.window.set_visible(false);
-        
-        // Create search input
-        nwg::TextInput::builder()
-            .parent(&data.window)
-            .size((460, 35))
-            .position((20, 20))
-            .placeholder_text(Some("Type to search..."))
-            .font(Some(&font))
-            .build(&mut data.input)?;
-        
-        // Create suggestions listbox
-        nwg::ListBox::builder()
-            .parent(&data.window)
-            .size((460, 150))
-            .position((20, 65))
-            .font(Some(&font))
-            .build(&mut data.listbox)?;
-        
-        // Add default suggestion
-        data.listbox.insert(0, "Press Ctrl+Space to activate".to_string());
-        
-        // Create close button
-        nwg::Button::builder()
-            .parent(&data.window)
-            .size((80, 25))
-            .position((400, 220))
-            .text("Close")
-            .font(Some(&font))
-            .build(&mut data.close_button)?;
-        
-        // Create animation timer for polling hotkey events
-        nwg::AnimationTimer::builder()
-            .parent(&data.window)
-            .interval(std::time::Duration::from_millis(50))
-            .build(&mut data.poll_timer)?;
-        
-        // Set up hotkey monitoring in separate thread
-        let (tx, rx) = mpsc::channel();
-        data.hotkey_receiver = Some(rx);
-        
-        thread::spawn(move || {
-            unsafe {
-                hotkey::register_hotkey_with_callback(move || {
-                    println!("[DEBUG] Hotkey pressed, sending signal");
-                    tx.send(()).ok();
-                });
-            }
-        });
-        
-        let app = Rc::new(RefCell::new(data));
-        
-        // Start the timer
-        app.borrow().poll_timer.start();
-        
-        Ok(app)
-    }
+// Event handling structure
+#[derive(Default)]
+struct AppEvents {
+    app: Option<Rc<RefCell<SearchBarApp>>>,
+    last_input_text: String,
 }
 
-// Event handling using NWG's event system
-fn setup_events(app: &Rc<RefCell<SearchBarApp>>) {
-    use nwg::Event as E;
+impl AppEvents {
+    fn new(app: Rc<RefCell<SearchBarApp>>) -> Self {
+        Self {
+            app: Some(app),
+            last_input_text: String::new(),
+        }
+    }
     
-    let evt_app = app.clone();
-    let evt_app2 = app.clone();
-    let evt_app3 = app.clone();
-    let evt_app4 = app.clone();
-    let evt_app5 = app.clone();
-    
-    // Timer event for hotkey polling
-    let timer_handler = nwg::bind_event_handler(&app.borrow().poll_timer.handle, &app.borrow().window.handle, move |evt, _evt_data, _handle| {
-        if let E::OnTimerTick = evt {
-            let mut app_ref = evt_app.borrow_mut();
+    fn handle_timer(&mut self) {
+        if let Some(ref app) = self.app {
+            let mut app_ref = app.borrow_mut();
             if let Some(ref receiver) = app_ref.hotkey_receiver {
                 if receiver.try_recv().is_ok() {
                     println!("[DEBUG] Received hotkey signal");
-                    app_ref.show_launcher();
+                    drop(app_ref); // Release the mutable borrow
+                    app.borrow().show_launcher();
                 }
             }
         }
-    });
+    }
     
-    // Input text change event
-    let input_handler = nwg::bind_event_handler(&app.borrow().input.handle, &app.borrow().window.handle, move |evt, _evt_data, _handle| {
-        if let E::OnTextInput = evt {
-            evt_app2.borrow().handle_input_change();
+    fn handle_input_change(&mut self) {
+        if let Some(ref app) = self.app {
+            let current_text = app.borrow().input.text();
+            if current_text != self.last_input_text {
+                self.last_input_text = current_text;
+                app.borrow().handle_input_change();
+            }
         }
-    });
+    }
     
-    // Button click event
-    let button_handler = nwg::bind_event_handler(&app.borrow().close_button.handle, &app.borrow().window.handle, move |evt, _evt_data, _handle| {
-        if let E::OnButtonClick = evt {
-            evt_app3.borrow().hide_launcher();
+    fn handle_button_click(&self) {
+        if let Some(ref app) = self.app {
+            app.borrow().hide_launcher();
         }
-    });
+    }
     
-    // Listbox double click event
-    let listbox_handler = nwg::bind_event_handler(&app.borrow().listbox.handle, &app.borrow().window.handle, move |evt, _evt_data, _handle| {
-        if let E::OnListBoxDoubleClick = evt {
-            evt_app4.borrow().execute_command();
+    fn handle_listbox_double_click(&self) {
+        if let Some(ref app) = self.app {
+            app.borrow().execute_command();
         }
-    });
+    }
     
-    // Window close event
-    let close_handler = nwg::bind_event_handler(&app.borrow().window.handle, &app.borrow().window.handle, move |evt, _evt_data, _handle| {
-        if let E::OnWindowClose = evt {
-            evt_app5.borrow().hide_launcher();
-            nwg::stop_thread_dispatch();
+    fn handle_window_close(&self) {
+        if let Some(ref app) = self.app {
+            app.borrow().hide_launcher();
         }
-    });
+        nwg::stop_thread_dispatch();
+    }
     
-    // Store handlers to prevent them from being dropped
-    std::mem::forget(timer_handler);
-    std::mem::forget(input_handler);
-    std::mem::forget(button_handler);
-    std::mem::forget(listbox_handler);
-    std::mem::forget(close_handler);
+    fn handle_key_press(&self, key_code: u32) {
+        if key_code == 13 { // Enter key
+            if let Some(ref app) = self.app {
+                app.borrow().execute_command();
+            }
+        } else if key_code == 27 { // Escape key
+            if let Some(ref app) = self.app {
+                app.borrow().hide_launcher();
+            }
+        }
+    }
 }
 
 fn main() {
@@ -328,12 +260,121 @@ fn main() {
     
     nwg::init().expect("Failed to init Native Windows GUI");
     
-    let app = SearchBarApp::default();
-    let ui = SearchBarApp::build_ui(app).expect("Failed to build UI");
+    // Create font for better appearance
+    let mut font = nwg::Font::default();
+    nwg::Font::builder()
+        .family("Segoe UI")
+        .size(16)
+        .build(&mut font)
+        .expect("Failed to create font");
     
-    // Set up event handlers after UI is built
-    setup_events(&ui);
+    let mut app = SearchBarApp::default();
+    
+    // Create the main window (initially hidden)
+    nwg::Window::builder()
+        .size((500, 250))
+        .position((300, 300))
+        .title("TotalControl")
+        .flags(nwg::WindowFlags::WINDOW | nwg::WindowFlags::VISIBLE)
+        .build(&mut app.window)
+        .expect("Failed to create window");
+    
+    // Hide initially
+    app.window.set_visible(false);
+    
+    // Create search input
+    nwg::TextInput::builder()
+        .parent(&app.window)
+        .size((460, 35))
+        .position((20, 20))
+        .placeholder_text(Some("Type to search..."))
+        .font(Some(&font))
+        .build(&mut app.input)
+        .expect("Failed to create input");
+    
+    // Create suggestions listbox
+    nwg::ListBox::builder()
+        .parent(&app.window)
+        .size((460, 150))
+        .position((20, 65))
+        .font(Some(&font))
+        .build(&mut app.listbox)
+        .expect("Failed to create listbox");
+    
+    // Add default suggestion
+    app.listbox.insert(0, "Press Ctrl+Space to activate".to_string());
+    
+    // Create close button
+    nwg::Button::builder()
+        .parent(&app.window)
+        .size((80, 25))
+        .position((400, 220))
+        .text("Close")
+        .font(Some(&font))
+        .build(&mut app.close_button)
+        .expect("Failed to create button");
+    
+    // Create animation timer for polling hotkey events
+    nwg::AnimationTimer::builder()
+        .parent(&app.window)
+        .interval(std::time::Duration::from_millis(50))
+        .build(&mut app.poll_timer)
+        .expect("Failed to create timer");
+    
+    // Set up hotkey monitoring in separate thread
+    let (tx, rx) = mpsc::channel();
+    app.hotkey_receiver = Some(rx);
+    
+    thread::spawn(move || {
+        unsafe {
+            hotkey::register_hotkey_with_callback(move || {
+                println!("[DEBUG] Hotkey pressed, sending signal");
+                tx.send(()).ok();
+            });
+        }
+    });
+    
+    let app_rc = Rc::new(RefCell::new(app));
+    let mut events = AppEvents::new(app_rc.clone());
+    
+    // Start the timer
+    app_rc.borrow().poll_timer.start();
+    
+    // Manual event loop using NWG's message dispatch
+    let ui = nwg::dispatch_thread_events_with_callback(move || {
+        // Check for timer events
+        events.handle_timer();
+        
+        // Check for input changes
+        events.handle_input_change();
+        
+        // Handle window messages manually
+        unsafe {
+            use windows::Win32::UI::WindowsAndMessaging::{PeekMessageA, MSG, PM_REMOVE, WM_KEYDOWN, WM_LBUTTONDBLCLK, WM_COMMAND};
+            use windows::Win32::Foundation::HWND;
+            
+            let mut msg = MSG::default();
+            while PeekMessageA(&mut msg, HWND(0), 0, 0, PM_REMOVE).as_bool() {
+                match msg.message {
+                    WM_KEYDOWN => {
+                        events.handle_key_press(msg.wParam.0 as u32);
+                    }
+                    WM_LBUTTONDBLCLK => {
+                        // Check if it's from the listbox
+                        events.handle_listbox_double_click();
+                    }
+                    WM_COMMAND => {
+                        // Check if it's from the button
+                        events.handle_button_click();
+                    }
+                    _ => {}
+                }
+                
+                windows::Win32::UI::WindowsAndMessaging::TranslateMessage(&msg);
+                windows::Win32::UI::WindowsAndMessaging::DispatchMessageA(&msg);
+            }
+        }
+    });
     
     println!("[DEBUG] UI built, starting message loop. Press Ctrl+Space to activate!");
-    nwg::dispatch_thread_events();
 }
