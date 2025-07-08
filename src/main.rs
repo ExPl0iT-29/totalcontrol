@@ -256,82 +256,71 @@ impl nwg::NativeUi<Rc<RefCell<SearchBarApp>>> for SearchBarApp {
         
         let app = Rc::new(RefCell::new(data));
         
-        // Use NWG's partial application system for event handling
-        let app_weak = Rc::downgrade(&app);
-        let timer_handler = nwg::full_bind_event_handler(&app.borrow().poll_timer.handle, move |_evt, _evt_data, _handle| {
-            if let Some(app) = app_weak.upgrade() {
-                let mut app_ref = app.borrow_mut();
-                if let Some(ref receiver) = app_ref.hotkey_receiver {
-                    if receiver.try_recv().is_ok() {
-                        println!("[DEBUG] Received hotkey signal");
-                        app_ref.show_launcher();
-                    }
-                }
-            }
-        });
-        
-        // Handle input changes
-        let app_weak = Rc::downgrade(&app);
-        let input_handler = nwg::full_bind_event_handler(&app.borrow().input.handle, move |evt, _evt_data, _handle| {
-            if let Some(app) = app_weak.upgrade() {
-                match evt {
-                    nwg::Event::OnTextInput => {
-                        app.borrow().handle_input_change();
-                    },
-                    nwg::Event::OnKeyPress => {
-                        if let nwg::EventData::OnKey(key_data) = _evt_data {
-                            match key_data {
-                                nwg::keys::RETURN => {
-                                    app.borrow().execute_command();
-                                },
-                                nwg::keys::ESCAPE => {
-                                    app.borrow().hide_launcher();
-                                },
-                                _ => {}
-                            }
-                        }
-                    },
-                    _ => {}
-                }
-            }
-        });
-        
-        // Handle button click
-        let app_weak = Rc::downgrade(&app);
-        let button_handler = nwg::full_bind_event_handler(&app.borrow().close_button.handle, move |evt, _evt_data, _handle| {
-            if let Some(app) = app_weak.upgrade() {
-                if let nwg::Event::OnButtonClick = evt {
-                    app.borrow().hide_launcher();
-                }
-            }
-        });
-        
-        // Handle listbox double click
-        let app_weak = Rc::downgrade(&app);
-        let listbox_handler = nwg::full_bind_event_handler(&app.borrow().listbox.handle, move |evt, _evt_data, _handle| {
-            if let Some(app) = app_weak.upgrade() {
-                if let nwg::Event::OnListBoxDoubleClick = evt {
-                    app.borrow().execute_command();
-                }
-            }
-        });
-        
-        // Handle window close
-        let app_weak = Rc::downgrade(&app);
-        let close_handler = nwg::full_bind_event_handler(&app.borrow().window.handle, move |evt, _evt_data, _handle| {
-            if let Some(app) = app_weak.upgrade() {
-                if let nwg::Event::OnWindowClose = evt {
-                    app.borrow().hide_launcher();
-                    nwg::stop_thread_dispatch();
-                }
-            }
-        });
-        
         // Start the timer
         app.borrow().poll_timer.start();
         
         Ok(app)
     }
+}
+
+// Event handling using NWG's event system
+fn setup_events(app: &Rc<RefCell<SearchBarApp>>) {
+    use nwg::Event as E;
+    
+    let evt_app = app.clone();
+    let evt_app2 = app.clone();
+    let evt_app3 = app.clone();
+    let evt_app4 = app.clone();
+    let evt_app5 = app.clone();
+    
+    // Timer event for hotkey polling
+    let timer_handler = nwg::bind_event_handler(&app.borrow().poll_timer.handle, &app.borrow().window.handle, move |evt, _evt_data, _handle| {
+        if let E::OnTimerTick = evt {
+            let mut app_ref = evt_app.borrow_mut();
+            if let Some(ref receiver) = app_ref.hotkey_receiver {
+                if receiver.try_recv().is_ok() {
+                    println!("[DEBUG] Received hotkey signal");
+                    app_ref.show_launcher();
+                }
+            }
+        }
+    });
+    
+    // Input text change event
+    let input_handler = nwg::bind_event_handler(&app.borrow().input.handle, &app.borrow().window.handle, move |evt, _evt_data, _handle| {
+        if let E::OnTextInput = evt {
+            evt_app2.borrow().handle_input_change();
+        }
+    });
+    
+    // Button click event
+    let button_handler = nwg::bind_event_handler(&app.borrow().close_button.handle, &app.borrow().window.handle, move |evt, _evt_data, _handle| {
+        if let E::OnButtonClick = evt {
+            evt_app3.borrow().hide_launcher();
+        }
+    });
+    
+    // Listbox double click event
+    let listbox_handler = nwg::bind_event_handler(&app.borrow().listbox.handle, &app.borrow().window.handle, move |evt, _evt_data, _handle| {
+        if let E::OnListBoxDoubleClick = evt {
+            evt_app4.borrow().execute_command();
+        }
+    });
+    
+    // Window close event
+    let close_handler = nwg::bind_event_handler(&app.borrow().window.handle, &app.borrow().window.handle, move |evt, _evt_data, _handle| {
+        if let E::OnWindowClose = evt {
+            evt_app5.borrow().hide_launcher();
+            nwg::stop_thread_dispatch();
+        }
+    });
+    
+    // Store handlers to prevent them from being dropped
+    std::mem::forget(timer_handler);
+    std::mem::forget(input_handler);
+    std::mem::forget(button_handler);
+    std::mem::forget(listbox_handler);
+    std::mem::forget(close_handler);
 }
 
 fn main() {
@@ -340,7 +329,10 @@ fn main() {
     nwg::init().expect("Failed to init Native Windows GUI");
     
     let app = SearchBarApp::default();
-    let _ui = SearchBarApp::build_ui(app).expect("Failed to build UI");
+    let ui = SearchBarApp::build_ui(app).expect("Failed to build UI");
+    
+    // Set up event handlers after UI is built
+    setup_events(&ui);
     
     println!("[DEBUG] UI built, starting message loop. Press Ctrl+Space to activate!");
     nwg::dispatch_thread_events();
